@@ -13,6 +13,14 @@ SCRIPTS=/workspaces/isaac_ros-dev/autoRoboProject/scripts
 SESSION=tracker
 WS=/workspaces/isaac_ros-dev
 
+# Source ROS so colcon and ros2 are available (find whatever distro is installed)
+for _setup in /opt/ros/*/setup.bash; do
+    # shellcheck disable=SC1090
+    source "$_setup" && break
+done
+# Also source the workspace overlay if it exists
+[ -f "$WS/install/setup.bash" ] && source "$WS/install/setup.bash"
+
 # Build changed packages before starting
 echo "Building ROS packages..."
 cd "$WS" && colcon build \
