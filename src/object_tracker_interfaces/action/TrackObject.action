@@ -1,0 +1,11 @@
+# Goal: which COCO class to track (e.g. "cell phone")
+string object_class
+---
+# Result
+string result
+---
+# Feedback
+string status
+float32 bbox_cx
+float32 bbox_cy
+float32 depth_distance
