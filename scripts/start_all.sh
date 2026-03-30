@@ -11,6 +11,15 @@
 
 SCRIPTS=/workspaces/isaac_ros-dev/autoRoboProject/scripts
 SESSION=tracker
+WS=/workspaces/isaac_ros-dev
+
+# Build changed packages before starting
+echo "Building ROS packages..."
+cd "$WS" && colcon build \
+    --packages-select object_tracker_interfaces object_tracker_server object_tracker_client \
+    --cmake-args -DCMAKE_BUILD_TYPE=Release \
+    2>&1 | tail -20
+echo "Build done."
 
 # Install tmux if missing
 if ! command -v tmux &> /dev/null; then

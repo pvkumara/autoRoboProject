@@ -16,12 +16,16 @@ using TrackObject = object_tracker_interfaces::action::TrackObject;
 using GoalHandleTrackObject = rclcpp_action::ServerGoalHandle<TrackObject>;
 
 // ── Camera / tracking constants ──────────────────────────────────────────────
-static constexpr float IMAGE_W        = 640.0f;
-static constexpr float IMAGE_H        = 480.0f;
-static constexpr float CENTER_X       = IMAGE_W / 2.0f;   // 320
-static constexpr float CENTER_Y       = IMAGE_H / 2.0f;   // 240
-static constexpr float CENTER_TOL     = 30.0f;            // ±30 px counts as centred
-static constexpr float SUCCESS_DIST_M = 0.20f;            // 20 cm → tracking success
+static constexpr float  IMAGE_W        = 640.0f;
+static constexpr float  IMAGE_H        = 480.0f;
+static constexpr float  CENTER_X       = IMAGE_W / 2.0f;   // 320
+static constexpr float  CENTER_Y       = IMAGE_H / 2.0f;   // 240
+static constexpr float  CENTER_TOL     = 30.0f;            // ±30 px counts as centred
+static constexpr float  SUCCESS_DIST_M = 0.20f;            // 20 cm → tracking success
+
+// Number of consecutive 10 Hz ticks the object can be absent before we give up.
+// 15 ticks = 1.5 s of grace time for re-searching after a momentary loss.
+static constexpr size_t MAX_LOST_FRAMES = 15;
 
 // ── Motor control constants ───────────────────────────────────────────────────
 static constexpr float MAX_LINEAR_VEL  = 0.3f;   // m/s  (hard limit: 0.5 per assignment)
@@ -130,7 +134,8 @@ private:
         auto feedback = std::make_shared<TrackObject::Feedback>();
         auto result   = std::make_shared<TrackObject::Result>();
 
-        bool tracking_started = false;
+        bool   tracking_started = false;
+        size_t lost_frames      = 0;   // consecutive ticks without the target
 
         rclcpp::Rate rate(10);  // 10 Hz control loop
 
@@ -154,35 +159,44 @@ private:
             }
 
             if (!detected) {
-                // Object not in FOV
-                if (tracking_started) {
-                    // Was tracking, now lost — failure
-                    RCLCPP_WARN(get_logger(), "Object '%s' disappeared — Failed.",
-                                target.c_str());
+                ++lost_frames;
+
+                // Give the object MAX_LOST_FRAMES ticks to reappear before giving up.
+                if (tracking_started && lost_frames > MAX_LOST_FRAMES) {
+                    RCLCPP_WARN(get_logger(),
+                                "Object '%s' lost for %.1f s — giving up.",
+                                target.c_str(),
+                                static_cast<double>(lost_frames) / 10.0);
                     feedback->status         = "Tracking Failed: object lost.";
                     feedback->bbox_cx        = 0;
                     feedback->bbox_cy        = 0;
                     feedback->depth_distance = 0;
                     goal_handle->publish_feedback(feedback);
-
                     stopRobot();
                     result->result = "Tracking Failed.";
                     goal_handle->succeed(result);
                     return;
                 }
 
-                // Still searching
-                feedback->status         = "Searching.";
+                if (tracking_started) {
+                    // Briefly lost — spin and try to re-acquire
+                    feedback->status = "Re-searching... (" +
+                                       std::to_string(lost_frames) + "/" +
+                                       std::to_string(MAX_LOST_FRAMES) + ")";
+                } else {
+                    feedback->status = "Searching.";
+                }
                 feedback->bbox_cx        = 0;
                 feedback->bbox_cy        = 0;
                 feedback->depth_distance = 0;
                 goal_handle->publish_feedback(feedback);
 
-                // Part 2: spin slowly while searching
+                // Spin slowly while searching / re-searching
                 publishSearchSpin();
 
             } else {
                 // Object detected ─────────────────────────────────────────────
+                lost_frames      = 0;
                 tracking_started = true;
 
                 std::string position = computePositionLabel(cx, cy);
@@ -311,18 +325,50 @@ private:
             }
         }
 
-        // Fetch depth at bbox centre from the latest depth image
+        // Fetch depth at bbox centre from the latest depth image (16UC1, mm).
         if (!last_class_.empty() && !last_depth_image_.empty()) {
-            int u = static_cast<int>(last_bbox_cx_);
-            int v = static_cast<int>(last_bbox_cy_);
-            u = std::clamp(u, 0, static_cast<int>(IMAGE_W) - 1);
-            v = std::clamp(v, 0, static_cast<int>(IMAGE_H) - 1);
+            int u = std::clamp(static_cast<int>(last_bbox_cx_),
+                               0, static_cast<int>(IMAGE_W) - 1);
+            int v = std::clamp(static_cast<int>(last_bbox_cy_),
+                               0, static_cast<int>(IMAGE_H) - 1);
 
-            // Depth image is 16UC1: each pixel is uint16 in millimetres
-            int idx = v * static_cast<int>(IMAGE_W) + u;
-            if (idx >= 0 && idx < static_cast<int>(last_depth_image_.size())) {
-                uint16_t raw_mm = last_depth_image_[idx];
-                last_depth_m_   = static_cast<float>(raw_mm) / 1000.0f;
+            // Helper: safely read one depth pixel using the cached step.
+            auto readDepth = [&](int pu, int pv) -> uint16_t {
+                if (pu < 0 || pu >= static_cast<int>(last_depth_step_px_) ||
+                    pv < 0 || pv >= static_cast<int>(last_depth_height_px_)) {
+                    return 0;
+                }
+                int pidx = pv * static_cast<int>(last_depth_step_px_) + pu;
+                if (pidx < 0 || pidx >= static_cast<int>(last_depth_image_.size())) {
+                    return 0;
+                }
+                return last_depth_image_[pidx];
+            };
+
+            uint16_t raw_mm = readDepth(u, v);
+
+            // Phones and reflective surfaces often return 0 at the exact centre.
+            // Average valid pixels in a 9×9 neighbourhood as a fallback.
+            if (raw_mm == 0) {
+                uint32_t sum   = 0;
+                int      count = 0;
+                for (int dy = -4; dy <= 4; ++dy) {
+                    for (int dx = -4; dx <= 4; ++dx) {
+                        uint16_t d = readDepth(u + dx, v + dy);
+                        if (d > 0) { sum += d; ++count; }
+                    }
+                }
+                raw_mm = (count > 0)
+                    ? static_cast<uint16_t>(sum / static_cast<uint32_t>(count))
+                    : 0;
+            }
+
+            last_depth_m_ = static_cast<float>(raw_mm) / 1000.0f;
+
+            if (raw_mm == 0) {
+                RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
+                    "Depth is 0 at (%d,%d) — surface may be IR-reflective "
+                    "or depth stream not aligned.", u, v);
             }
         }
     }
@@ -330,10 +376,14 @@ private:
     // ── Depth image callback ──────────────────────────────────────────────────
     void depthCallback(const sensor_msgs::msg::Image::SharedPtr msg)
     {
-        // Cache the raw 16-bit depth buffer (millimetres, 640×480)
         std::lock_guard<std::mutex> lock(detection_mutex_);
-        const uint16_t * ptr = reinterpret_cast<const uint16_t *>(msg->data.data());
-        size_t n = msg->width * msg->height;
+        // step is bytes per row; divide by 2 to get uint16_t elements per row.
+        last_depth_step_px_   = (msg->step > 0)
+            ? msg->step / static_cast<uint32_t>(sizeof(uint16_t))
+            : msg->width;
+        last_depth_height_px_ = msg->height;
+        const uint16_t * ptr  = reinterpret_cast<const uint16_t *>(msg->data.data());
+        size_t n = last_depth_step_px_ * msg->height;
         last_depth_image_.assign(ptr, ptr + n);
     }
 
@@ -345,10 +395,12 @@ private:
     // ── Shared state (guarded by detection_mutex_) ────────────────────────────
     std::mutex              detection_mutex_;
     std::string             last_class_;
-    float                   last_bbox_cx_  = 0.0f;
-    float                   last_bbox_cy_  = 0.0f;
-    float                   last_depth_m_  = 0.0f;
+    float                   last_bbox_cx_       = 0.0f;
+    float                   last_bbox_cy_       = 0.0f;
+    float                   last_depth_m_       = 0.0f;
     std::vector<uint16_t>   last_depth_image_;
+    uint32_t                last_depth_step_px_   = static_cast<uint32_t>(IMAGE_W);
+    uint32_t                last_depth_height_px_ = static_cast<uint32_t>(IMAGE_H);
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
