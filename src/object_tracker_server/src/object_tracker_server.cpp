@@ -270,6 +270,23 @@ private:
         cmd_vel_pub_->publish(geometry_msgs::msg::Twist{});
     }
 
+    // ── Class-id resolver ─────────────────────────────────────────────────────
+    // Isaac ROS YOLOv8 decoder publishes numeric class_id strings ("67").
+    // Convert to the COCO name ("cell phone") so goal matching works.
+    static std::string resolveClassName(const std::string & raw_id)
+    {
+        // Try numeric index first
+        try {
+            size_t idx = static_cast<size_t>(std::stoul(raw_id));
+            if (idx < COCO_CLASSES.size()) {
+                return COCO_CLASSES[idx];
+            }
+        } catch (...) {}
+
+        // Already a name (some decoder versions output the name directly)
+        return raw_id;
+    }
+
     // ── Detection callback ────────────────────────────────────────────────────
     void detectionCallback(
         const vision_msgs::msg::Detection2DArray::SharedPtr msg)
@@ -286,7 +303,8 @@ private:
             for (const auto & hyp : det.results) {
                 if (hyp.hypothesis.score > best_score) {
                     best_score    = hyp.hypothesis.score;
-                    last_class_   = hyp.hypothesis.class_id;
+                    // Resolve numeric id → COCO name
+                    last_class_   = resolveClassName(hyp.hypothesis.class_id);
                     last_bbox_cx_ = static_cast<float>(det.bbox.center.position.x);
                     last_bbox_cy_ = static_cast<float>(det.bbox.center.position.y);
                 }
