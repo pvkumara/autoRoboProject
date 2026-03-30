@@ -130,7 +130,6 @@ private:
         auto feedback = std::make_shared<TrackObject::Feedback>();
         auto result   = std::make_shared<TrackObject::Result>();
 
-        bool was_detected  = false;   // object has been seen at least once
         bool tracking_started = false;
 
         rclcpp::Rate rate(10);  // 10 Hz control loop
@@ -185,7 +184,6 @@ private:
             } else {
                 // Object detected ─────────────────────────────────────────────
                 tracking_started = true;
-                was_detected     = true;
 
                 std::string position = computePositionLabel(cx, cy);
                 feedback->status         = position;
