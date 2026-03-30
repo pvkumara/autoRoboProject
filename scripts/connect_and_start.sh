@@ -13,4 +13,5 @@ echo "Connecting to $JETSON_USER@$JETSON_IP ..."
 
 ssh -t "$JETSON_USER@$JETSON_IP" \
     "docker start $CONTAINER 2>/dev/null; \
-     docker exec -it -u admin $CONTAINER bash -c 'bash $SCRIPTS/start_all.sh'"
+     docker exec -it -u admin $CONTAINER bash -c \
+       'cd /workspaces/isaac_ros-dev/autoRoboProject && git pull --quiet && bash $SCRIPTS/start_all.sh'"
