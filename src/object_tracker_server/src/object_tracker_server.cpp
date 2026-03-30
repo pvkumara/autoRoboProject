@@ -69,9 +69,9 @@ public:
             std::bind(&ObjectTrackerServer::handleCancel,  this, std::placeholders::_1),
             std::bind(&ObjectTrackerServer::handleAccepted,this, std::placeholders::_1));
 
-        // Subscribe to YOLOv8 detections (Isaac ROS decoder output)
+        // Subscribe to YOLOv8 detections (Isaac ROS YoloV8DecoderNode output)
         detection_sub_ = create_subscription<vision_msgs::msg::Detection2DArray>(
-            "/detections", 10,
+            "/detections_output", 10,
             std::bind(&ObjectTrackerServer::detectionCallback, this, std::placeholders::_1));
 
         // Subscribe to aligned depth image (RealSense D435i)
