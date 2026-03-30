@@ -13,20 +13,14 @@ SCRIPTS=/workspaces/isaac_ros-dev/autoRoboProject/scripts
 SESSION=tracker
 WS=/workspaces/isaac_ros-dev
 
-# Source ROS so colcon and ros2 are available (find whatever distro is installed)
-for _setup in /opt/ros/*/setup.bash; do
-    # shellcheck disable=SC1090
-    source "$_setup" && break
-done
-# Also source the workspace overlay if it exists
-[ -f "$WS/install/setup.bash" ] && source "$WS/install/setup.bash"
-
-# Build changed packages before starting
+# Build inside an interactive subshell so ~/.bashrc (ROS env) is sourced properly.
+# Non-interactive docker exec shells don't source .bashrc, so colcon/ament fail
+# unless we explicitly request interactive mode for this subprocess.
 echo "Building ROS packages..."
-cd "$WS" && colcon build \
+bash -i -c "cd '$WS' && colcon build \
     --packages-select object_tracker_interfaces object_tracker_server object_tracker_client \
     --cmake-args -DCMAKE_BUILD_TYPE=Release \
-    2>&1 | tail -20
+    2>&1 | tail -20"
 echo "Build done."
 
 # Install tmux if missing
