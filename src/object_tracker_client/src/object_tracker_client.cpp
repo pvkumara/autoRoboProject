@@ -3,6 +3,10 @@
 #include <object_tracker_interfaces/action/track_object.hpp>
 
 #include <iostream>
+#include <fstream>
+#include <sstream>
+#include <iomanip>
+#include <ctime>
 #include <string>
 #include <thread>
 #include <atomic>
@@ -14,6 +18,19 @@ using GoalHandleTrackObject = rclcpp_action::ClientGoalHandle<TrackObject>;
 
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Returns a string like "2026-03-31_14-05-22"
+static std::string timestampStr()
+{
+    std::time_t t = std::time(nullptr);
+    std::tm tm{};
+    localtime_r(&t, &tm);
+    std::ostringstream ss;
+    ss << std::put_time(&tm, "%Y-%m-%d_%H-%M-%S");
+    return ss.str();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 class ObjectTrackerClient : public rclcpp::Node
 {
 public:
@@ -21,6 +38,24 @@ public:
     : Node("object_tracker_client")
     {
         action_client_ = rclcpp_action::create_client<TrackObject>(this, "track_object");
+
+        std::string log_path = std::string(getenv("HOME")) +
+                               "/autoRoboProject/logs/tracker_run_" + timestampStr() + ".log";
+        log_file_.open(log_path, std::ios::out | std::ios::app);
+        if (log_file_.is_open()) {
+            RCLCPP_INFO(get_logger(), "Logging to: %s", log_path.c_str());
+            logLine("=== Object Tracker Client started: " + timestampStr() + " ===");
+        } else {
+            RCLCPP_WARN(get_logger(), "Could not open log file: %s", log_path.c_str());
+        }
+    }
+
+    ~ObjectTrackerClient()
+    {
+        if (log_file_.is_open()) {
+            logLine("=== Session ended: " + timestampStr() + " ===");
+            log_file_.close();
+        }
     }
 
     // Blocking call: asks the user for input then sends goals in a loop.
@@ -39,6 +74,7 @@ public:
             if (!rclcpp::ok()) break;
             if (target.empty()) continue;
 
+            logLine("--- New tracking session: target='" + target + "' ---");
             sendGoal(target);
 
             // Block until this goal is finished (success, fail, cancel)
@@ -54,6 +90,18 @@ private:
     std::mutex              done_mutex_;
     std::condition_variable done_cv_;
     bool                    goal_done_ = false;
+
+    std::ofstream           log_file_;
+    std::mutex              log_mutex_;
+
+    void logLine(const std::string & line)
+    {
+        std::lock_guard<std::mutex> lock(log_mutex_);
+        if (log_file_.is_open()) {
+            log_file_ << "[" << timestampStr() << "] " << line << "\n";
+            log_file_.flush();
+        }
+    }
 
     // ── User prompt ───────────────────────────────────────────────────────────
     static std::string promptUser()
@@ -83,6 +131,7 @@ private:
         goal_msg.object_class = object_class;
 
         RCLCPP_INFO(get_logger(), "Sending goal: track '%s'", object_class.c_str());
+        logLine("GOAL SENT: track '" + object_class + "'");
 
         auto send_goal_options = rclcpp_action::Client<TrackObject>::SendGoalOptions();
 
@@ -92,10 +141,12 @@ private:
                     RCLCPP_WARN(get_logger(),
                         "Goal REJECTED — '%s' is not a valid COCO class.",
                         object_class.c_str());
+                    logLine("GOAL REJECTED: '" + object_class + "' is not a valid COCO class.");
                     signalDone();
                 } else {
                     RCLCPP_INFO(get_logger(),
                         "Goal ACCEPTED — tracking '%s'.", object_class.c_str());
+                    logLine("GOAL ACCEPTED: tracking '" + object_class + "'");
                 }
             };
 
@@ -107,6 +158,14 @@ private:
                     feedback->status.c_str(),
                     feedback->bbox_cx,
                     feedback->depth_distance);
+
+                std::ostringstream ss;
+                ss << std::fixed << std::setprecision(3);
+                ss << "FEEDBACK: " << feedback->status
+                   << "  cx=" << feedback->bbox_cx
+                   << "  cy=" << feedback->bbox_cy
+                   << "  depth=" << feedback->depth_distance << " m";
+                logLine(ss.str());
             };
 
         send_goal_options.result_callback =
@@ -115,16 +174,20 @@ private:
                     case rclcpp_action::ResultCode::SUCCEEDED:
                         RCLCPP_INFO(get_logger(), "[Result] %s",
                                     wrapped.result->result.c_str());
+                        logLine("RESULT: " + wrapped.result->result);
                         break;
                     case rclcpp_action::ResultCode::ABORTED:
                         RCLCPP_WARN(get_logger(), "[Result] Goal aborted: %s",
                                     wrapped.result->result.c_str());
+                        logLine("RESULT ABORTED: " + wrapped.result->result);
                         break;
                     case rclcpp_action::ResultCode::CANCELED:
                         RCLCPP_WARN(get_logger(), "[Result] Goal cancelled.");
+                        logLine("RESULT CANCELLED.");
                         break;
                     default:
                         RCLCPP_ERROR(get_logger(), "[Result] Unknown result code.");
+                        logLine("RESULT: unknown result code.");
                         break;
                 }
                 signalDone();

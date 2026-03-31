@@ -31,7 +31,7 @@ static constexpr size_t MAX_LOST_FRAMES = 15;
 static constexpr float MAX_LINEAR_VEL  = 0.3f;   // m/s  (hard limit: 0.5 per assignment)
 static constexpr float MAX_ANGULAR_VEL = 1.0f;   // rad/s
 static constexpr float FORWARD_GAIN    = 0.5f;   // linear_x = dep_dist * gain
-static constexpr float SEARCH_ANGULAR  = 0.5f;   // slow spin while searching
+static constexpr float SEARCH_ANGULAR  = 0.2f;   // slow spin while searching
 
 // All 80 COCO class names (index 0-79)
 static const std::array<std::string, 80> COCO_CLASSES = {
