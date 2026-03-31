@@ -131,6 +131,12 @@ private:
         const std::string target = goal_handle->get_goal()->object_class;
         RCLCPP_INFO(get_logger(), "Executing: tracking '%s'", target.c_str());
 
+        // Tell the detection callback to filter for this class only.
+        {
+            std::lock_guard<std::mutex> lock(detection_mutex_);
+            current_target_ = target;
+        }
+
         auto feedback = std::make_shared<TrackObject::Feedback>();
         auto result   = std::make_shared<TrackObject::Result>();
 
@@ -144,6 +150,7 @@ private:
                 result->result = "Tracking Cancelled.";
                 goal_handle->canceled(result);
                 stopRobot();
+                clearTarget();
                 return;
             }
 
@@ -173,6 +180,7 @@ private:
                     feedback->depth_distance = 0;
                     goal_handle->publish_feedback(feedback);
                     stopRobot();
+                    clearTarget();
                     result->result = "Tracking Failed.";
                     goal_handle->succeed(result);
                     return;
@@ -217,6 +225,7 @@ private:
                     RCLCPP_INFO(get_logger(), "Tracking Successful! '%s' is centred "
                                 "and %.2f m away.", target.c_str(), depth);
                     result->result = "Tracking Successful!";
+                    clearTarget();
                     goal_handle->succeed(result);
                     return;
                 }
@@ -229,6 +238,7 @@ private:
         }
 
         stopRobot();
+        clearTarget();
         result->result = "Tracking Failed.";
         goal_handle->abort(result);
     }
@@ -284,6 +294,12 @@ private:
         cmd_vel_pub_->publish(geometry_msgs::msg::Twist{});
     }
 
+    void clearTarget()
+    {
+        std::lock_guard<std::mutex> lock(detection_mutex_);
+        current_target_ = "";
+    }
+
     // ── Class-id resolver ─────────────────────────────────────────────────────
     // Isaac ROS YOLOv8 decoder publishes numeric class_id strings ("67").
     // Convert to the COCO name ("cell phone") so goal matching works.
@@ -307,7 +323,9 @@ private:
     {
         std::lock_guard<std::mutex> lock(detection_mutex_);
 
-        // Find the highest-confidence detection among all messages
+        // Find the highest-confidence detection that matches the current target.
+        // Ignoring higher-confidence detections of other classes ensures a person
+        // walking by at 0.9 confidence doesn't cause us to "lose" a phone at 0.6.
         last_class_ = "";
         last_bbox_cx_ = 0.0f;
         last_bbox_cy_ = 0.0f;
@@ -315,10 +333,13 @@ private:
 
         for (const auto & det : msg->detections) {
             for (const auto & hyp : det.results) {
-                if (hyp.hypothesis.score > best_score) {
+                std::string name = resolveClassName(hyp.hypothesis.class_id);
+                // Only consider detections that match what we're tracking.
+                // If no goal is active (current_target_ empty), accept anything.
+                bool matches = current_target_.empty() || (name == current_target_);
+                if (matches && hyp.hypothesis.score > best_score) {
                     best_score    = hyp.hypothesis.score;
-                    // Resolve numeric id → COCO name
-                    last_class_   = resolveClassName(hyp.hypothesis.class_id);
+                    last_class_   = name;
                     last_bbox_cx_ = static_cast<float>(det.bbox.center.position.x);
                     last_bbox_cy_ = static_cast<float>(det.bbox.center.position.y);
                 }
@@ -394,6 +415,7 @@ private:
 
     // ── Shared state (guarded by detection_mutex_) ────────────────────────────
     std::mutex              detection_mutex_;
+    std::string             current_target_;          // class the active goal wants; "" = no filter
     std::string             last_class_;
     float                   last_bbox_cx_       = 0.0f;
     float                   last_bbox_cy_       = 0.0f;
