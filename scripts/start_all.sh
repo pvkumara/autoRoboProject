@@ -61,6 +61,7 @@ echo ""
 echo "Attach with:          tmux attach -t $SESSION"
 echo "Switch windows:       Ctrl+B then 0 / 1 / 2"
 echo "Scroll in a pane:     Ctrl+B then [ (q to quit scroll)"
+echo "Stop gracefully:      bash $SCRIPTS/stop_all.sh"
 echo "Kill everything:      tmux kill-session -t $SESSION"
 echo ""
 tmux attach -t $SESSION
