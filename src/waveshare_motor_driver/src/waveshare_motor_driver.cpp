@@ -19,7 +19,7 @@ static constexpr float MAX_LINEAR  = 0.3f;   // m/s
 static constexpr float MAX_ANGULAR = 1.0f;   // rad/s
 
 // Default USB port for Waveshare robot base on Jetson Orin Nano
-static const char * DEFAULT_PORT = "/dev/ttyUSB0";
+static const char * DEFAULT_PORT = "/dev/ttyACM0";
 
 // ─────────────────────────────────────────────────────────────────────────────
 
