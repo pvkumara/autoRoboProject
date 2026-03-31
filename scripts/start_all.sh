@@ -6,6 +6,7 @@
 #   Window 0 "pipeline" — RealSense + YOLOv8
 #   Window 1 "server"   — Action server
 #   Window 2 "client"   — Action client
+#   Window 3 "motors"   — Waveshare motor driver (/cmd_vel → wheels)
 #
 # Attach to the session with:  tmux attach -t tracker
 
@@ -18,7 +19,7 @@ WS=/workspaces/isaac_ros-dev
 # unless we explicitly request interactive mode for this subprocess.
 echo "Building ROS packages..."
 bash -i -c "cd '$WS' && colcon build \
-    --packages-select object_tracker_interfaces object_tracker_server object_tracker_client \
+    --packages-select object_tracker_interfaces object_tracker_server object_tracker_client waveshare_motor_driver \
     --cmake-args -DCMAKE_BUILD_TYPE=Release \
     2>&1 | tail -20"
 echo "Build done."
@@ -46,6 +47,10 @@ tmux new-window -t $SESSION -n server \
 # Window 2: action client
 tmux new-window -t $SESSION -n client \
     "bash $SCRIPTS/run_client.sh; exec bash"
+
+# Window 3: motor driver (subscribes to /cmd_vel and drives the wheels)
+tmux new-window -t $SESSION -n motors \
+    "bash $SCRIPTS/run_motors.sh; exec bash"
 
 # Focus the client window by default
 tmux select-window -t $SESSION:client
