@@ -78,9 +78,11 @@ public:
             "/detections_output", 10,
             std::bind(&ObjectTrackerServer::detectionCallback, this, std::placeholders::_1));
 
-        // Subscribe to aligned depth image (RealSense D435i)
+        // Subscribe to aligned depth image (RealSense D435i).
+        // isaac_ros_examples realsense_mono_rect_depth fragment publishes here
+        // (no /camera/ prefix — differs from raw realsense2_camera_node output).
         depth_sub_ = create_subscription<sensor_msgs::msg::Image>(
-            "/camera/aligned_depth_to_color/image_raw", 10,
+            "/aligned_depth_to_color/image_raw", 10,
             std::bind(&ObjectTrackerServer::depthCallback, this, std::placeholders::_1));
 
         // Publish velocity commands for Part 2 motor control
