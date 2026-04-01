@@ -9,9 +9,11 @@ JETSON_USER=hrishibot
 CONTAINER=isaac_ros_dev-aarch64-container
 SCRIPTS=/workspaces/isaac_ros-dev/autoRoboProject/scripts
 
-echo "Connecting to $JETSON_USER@$JETSON_IP ..."
+echo "Connecting to $JETSON_USER@$JETSON_IP with X11 forwarding..."
 
-ssh -t "$JETSON_USER@$JETSON_IP" \
+# -X enables X11 forwarding so GUI tools (rqt_image_view, visualizer) work
+# DISPLAY is passed through to the container via into_container.sh
+ssh -X -t "$JETSON_USER@$JETSON_IP" \
     "docker start $CONTAINER 2>/dev/null; \
      docker exec -it -u admin $CONTAINER bash -c \
        'cd /workspaces/isaac_ros-dev/autoRoboProject && git pull --quiet && bash $SCRIPTS/start_all.sh'"
