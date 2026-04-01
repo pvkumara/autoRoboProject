@@ -108,7 +108,7 @@ private:
     {
         std::cout << "\n╔══════════════════════════════════════════╗\n";
         std::cout <<   "║  Object Tracker — Enter COCO class name  ║\n";
-        std::cout <<   "║  (press Enter for 'cell phone')          ║\n";
+        std::cout <<   "║  (press Enter for 'potted plant')        ║\n";
         std::cout <<   "╚══════════════════════════════════════════╝\n";
         std::cout << ">>> ";
         std::cout.flush();
@@ -118,8 +118,8 @@ private:
             return "";  // EOF / pipe closed
         }
         if (input.empty()) {
-            input = "cell phone";   // default: track the user's phone
-            std::cout << "(defaulting to 'cell phone')\n";
+            input = "potted plant";   // default: track the flower pot
+            std::cout << "(defaulting to 'potted plant')\n";
         }
         return input;
     }

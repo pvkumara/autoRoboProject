@@ -23,15 +23,15 @@ static constexpr float  CENTER_Y       = IMAGE_H / 2.0f;   // 240
 static constexpr float  CENTER_TOL     = 30.0f;            // ±30 px counts as centred
 static constexpr float  SUCCESS_DIST_M = 0.20f;            // 20 cm → tracking success
 
-// Number of consecutive 10 Hz ticks the object can be absent before we give up.
-// 15 ticks = 1.5 s of grace time for re-searching after a momentary loss.
-static constexpr size_t MAX_LOST_FRAMES = 15;
+// Ticks shown in feedback before the re-search label wraps (cosmetic only).
+// The robot never gives up — it keeps spinning until the object is found.
+static constexpr size_t RESEARCH_DISPLAY_MAX = 99;
 
 // ── Motor control constants ───────────────────────────────────────────────────
 static constexpr float MAX_LINEAR_VEL  = 0.3f;   // m/s  (hard limit: 0.5 per assignment)
 static constexpr float MAX_ANGULAR_VEL = 1.0f;   // rad/s
 static constexpr float FORWARD_GAIN    = 0.5f;   // linear_x = dep_dist * gain
-static constexpr float SEARCH_ANGULAR  = 0.2f;   // slow spin while searching
+static constexpr float SEARCH_ANGULAR  = 0.5f;   // spin speed while searching / re-searching
 
 // All 80 COCO class names (index 0-79)
 static const std::array<std::string, 80> COCO_CLASSES = {
@@ -89,7 +89,7 @@ public:
         cmd_vel_pub_ = create_publisher<geometry_msgs::msg::Twist>("/cmd_vel", 10);
 
         RCLCPP_INFO(get_logger(), "Object Tracker Action Server ready. "
-                    "Default target: 'cell phone' (your phone).");
+                    "Default target: 'potted plant' (flower pot).");
     }
 
 private:
@@ -157,51 +157,55 @@ private:
             }
 
             // Snapshot current detection state under lock
-            float cx, cy, depth;
+            float cx, cy, depth, last_valid_depth;
             bool detected;
             {
                 std::lock_guard<std::mutex> lock(detection_mutex_);
-                cx       = last_bbox_cx_;
-                cy       = last_bbox_cy_;
-                depth    = last_depth_m_;
-                detected = last_class_ == target;
+                cx               = last_bbox_cx_;
+                cy               = last_bbox_cy_;
+                depth            = last_depth_m_;
+                last_valid_depth = last_valid_depth_m_;
+                detected         = last_class_ == target;
+            }
+
+            // Use last known valid depth when the sensor returns 0.
+            // The RealSense often drops to 0 on reflective surfaces for several frames
+            // and then recovers; using the stale value keeps motion smooth.
+            float effective_depth = (depth > 0.0f) ? depth : last_valid_depth;
+
+            if (depth <= 0.0f && last_valid_depth > 0.0f) {
+                RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 500,
+                    "[DEBUG] Depth=0 this frame — using last valid depth: %.3f m",
+                    last_valid_depth);
             }
 
             if (!detected) {
                 ++lost_frames;
 
-                // Give the object MAX_LOST_FRAMES ticks to reappear before giving up.
-                if (tracking_started && lost_frames > MAX_LOST_FRAMES) {
-                    RCLCPP_WARN(get_logger(),
-                                "Object '%s' lost for %.1f s — giving up.",
-                                target.c_str(),
-                                static_cast<double>(lost_frames) / 10.0);
-                    feedback->status         = "Tracking Failed: object lost.";
-                    feedback->bbox_cx        = 0;
-                    feedback->bbox_cy        = 0;
-                    feedback->depth_distance = 0;
-                    goal_handle->publish_feedback(feedback);
-                    stopRobot();
-                    clearTarget();
-                    result->result = "Tracking Failed.";
-                    goal_handle->succeed(result);
-                    return;
-                }
-
+                // Never give up — keep spinning until the object reappears.
                 if (tracking_started) {
-                    // Briefly lost — spin and try to re-acquire
+                    size_t display = std::min(lost_frames, RESEARCH_DISPLAY_MAX);
                     feedback->status = "Re-searching... (" +
-                                       std::to_string(lost_frames) + "/" +
-                                       std::to_string(MAX_LOST_FRAMES) + ")";
+                                       std::to_string(display) + " ticks, " +
+                                       std::to_string(static_cast<int>(display / 10)) + "." +
+                                       std::to_string(static_cast<int>(display % 10)) + "s)";
+                    RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000,
+                        "[DEBUG] Re-searching for '%s' — lost for %.1f s  "
+                        "(last depth=%.3f m)",
+                        target.c_str(),
+                        static_cast<double>(lost_frames) / 10.0,
+                        effective_depth);
                 } else {
                     feedback->status = "Searching.";
+                    RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 2000,
+                        "[DEBUG] Searching for '%s' — no detection yet.",
+                        target.c_str());
                 }
                 feedback->bbox_cx        = 0;
                 feedback->bbox_cy        = 0;
                 feedback->depth_distance = 0;
                 goal_handle->publish_feedback(feedback);
 
-                // Spin slowly while searching / re-searching
                 publishSearchSpin();
 
             } else {
@@ -213,27 +217,31 @@ private:
                 feedback->status         = position;
                 feedback->bbox_cx        = cx;
                 feedback->bbox_cy        = cy;
-                feedback->depth_distance = depth;
+                feedback->depth_distance = effective_depth;
                 goal_handle->publish_feedback(feedback);
 
                 RCLCPP_INFO(get_logger(),
-                            "Tracking '%s' | pos=%s  cx=%.1f cy=%.1f depth=%.3fm",
-                            target.c_str(), position.c_str(), cx, cy, depth);
+                    "[DEBUG] Tracking '%s' | pos=%s  cx=%.1f cy=%.1f  "
+                    "depth=%.3fm (raw=%.3fm, last_valid=%.3fm)",
+                    target.c_str(), position.c_str(), cx, cy,
+                    effective_depth, depth, last_valid_depth);
 
-                // Check success condition
+                // Check success condition using effective (non-zero) depth
                 float dx = std::abs(cx - CENTER_X);
-                if (dx <= CENTER_TOL && depth > 0.0f && depth <= SUCCESS_DIST_M) {
+                if (dx <= CENTER_TOL && effective_depth > 0.0f &&
+                    effective_depth <= SUCCESS_DIST_M)
+                {
                     stopRobot();
                     RCLCPP_INFO(get_logger(), "Tracking Successful! '%s' is centred "
-                                "and %.2f m away.", target.c_str(), depth);
+                                "and %.2f m away.", target.c_str(), effective_depth);
                     result->result = "Tracking Successful!";
                     clearTarget();
                     goal_handle->succeed(result);
                     return;
                 }
 
-                // Part 2: drive toward the object
-                publishTrackingVelocity(cx, depth);
+                // Drive toward the object using effective depth
+                publishTrackingVelocity(cx, effective_depth);
             }
 
             rate.sleep();
@@ -388,10 +396,14 @@ private:
 
             last_depth_m_ = static_cast<float>(raw_mm) / 1000.0f;
 
-            if (raw_mm == 0) {
+            // Only advance the last-known-valid depth when we have a real reading.
+            if (raw_mm > 0) {
+                last_valid_depth_m_ = last_depth_m_;
+            } else {
                 RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
-                    "Depth is 0 at (%d,%d) — surface may be IR-reflective "
-                    "or depth stream not aligned.", u, v);
+                    "[DEBUG] Depth=0 at bbox centre (%d,%d) and 9x9 neighbourhood "
+                    "— surface may be IR-reflective. last_valid=%.3f m",
+                    u, v, last_valid_depth_m_);
             }
         }
     }
@@ -419,9 +431,10 @@ private:
     std::mutex              detection_mutex_;
     std::string             current_target_;          // class the active goal wants; "" = no filter
     std::string             last_class_;
-    float                   last_bbox_cx_       = 0.0f;
-    float                   last_bbox_cy_       = 0.0f;
-    float                   last_depth_m_       = 0.0f;
+    float                   last_bbox_cx_         = 0.0f;
+    float                   last_bbox_cy_         = 0.0f;
+    float                   last_depth_m_         = 0.0f;  // raw depth this frame (may be 0)
+    float                   last_valid_depth_m_   = 0.0f;  // last frame where depth was > 0
     std::vector<uint16_t>   last_depth_image_;
     uint32_t                last_depth_step_px_   = static_cast<uint32_t>(IMAGE_W);
     uint32_t                last_depth_height_px_ = static_cast<uint32_t>(IMAGE_H);
